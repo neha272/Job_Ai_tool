@@ -6,7 +6,6 @@ import { saveProfile } from "./actions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import {
   Card,
   CardContent,
@@ -23,17 +22,63 @@ export interface ProfileData {
   detailsJson: string;
 }
 
+// Common questions job portals ask. Stored (keyed) in Profile.detailsJson for
+// autofill later; each is an optional free-text field.
+const DETAIL_FIELDS = [
+  { key: "github", label: "GitHub", placeholder: "https://github.com/username" },
+  { key: "portfolio", label: "Portfolio / website", placeholder: "https://…" },
+  {
+    key: "workAuthorization",
+    label: "Authorized to work in the US?",
+    placeholder: "Yes / No",
+  },
+  {
+    key: "sponsorship",
+    label: "Requires visa sponsorship?",
+    placeholder: "Yes / No",
+  },
+  { key: "location", label: "Current location", placeholder: "City, State" },
+  {
+    key: "yearsExperience",
+    label: "Years of experience",
+    placeholder: "e.g. 3",
+  },
+  {
+    key: "heardAbout",
+    label: "How did you hear about us?",
+    placeholder: "(optional)",
+  },
+] as const;
+
+function parseDetails(json: string): Record<string, string> {
+  try {
+    const obj: unknown = JSON.parse(json || "{}");
+    if (obj && typeof obj === "object") {
+      const out: Record<string, string> = {};
+      for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+        out[k] = v == null ? "" : String(v);
+      }
+      return out;
+    }
+  } catch {
+    // fall through
+  }
+  return {};
+}
+
 export function ProfileForm({ profile }: { profile: ProfileData | null }) {
   const [fullName, setFullName] = useState(profile?.fullName ?? "");
   const [email, setEmail] = useState(profile?.email ?? "");
   const [phone, setPhone] = useState(profile?.phone ?? "");
   const [linkedinUrl, setLinkedinUrl] = useState(profile?.linkedinUrl ?? "");
-  const [detailsJson, setDetailsJson] = useState(
-    profile?.detailsJson && profile.detailsJson !== "{}"
-      ? profile.detailsJson
-      : "",
+  const [details, setDetails] = useState<Record<string, string>>(
+    parseDetails(profile?.detailsJson ?? "{}"),
   );
   const [pending, startTransition] = useTransition();
+
+  function setDetail(key: string, value: string) {
+    setDetails((d) => ({ ...d, [key]: value }));
+  }
 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -43,7 +88,7 @@ export function ProfileForm({ profile }: { profile: ProfileData | null }) {
         email,
         phone,
         linkedinUrl,
-        detailsJson,
+        details,
       });
       if (res.ok) toast.success(res.message);
       else toast.error(res.message);
@@ -60,7 +105,7 @@ export function ProfileForm({ profile }: { profile: ProfileData | null }) {
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <form onSubmit={onSubmit} className="grid gap-4">
+        <form onSubmit={onSubmit} className="grid gap-5">
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="grid gap-1.5">
               <Label htmlFor="fullName">Full name</Label>
@@ -102,20 +147,28 @@ export function ProfileForm({ profile }: { profile: ProfileData | null }) {
               />
             </div>
           </div>
-          <div className="grid gap-1.5">
-            <Label htmlFor="detailsJson">Additional fields (JSON)</Label>
-            <Textarea
-              id="detailsJson"
-              value={detailsJson}
-              onChange={(e) => setDetailsJson(e.target.value)}
-              placeholder={`{\n  "github": "https://github.com/janedoe",\n  "authorizedToWork": "Yes"\n}`}
-              className="min-h-28 font-mono text-xs"
-            />
+
+          <div className="border-t border-border pt-4">
+            <p className="text-sm font-medium">Application fields</p>
             <p className="text-xs text-muted-foreground">
-              Extra answers keyed by common form-field names, for portal
-              autofill later. Optional.
+              Common questions portals ask — used to auto-fill applications
+              later. All optional.
             </p>
           </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            {DETAIL_FIELDS.map((f) => (
+              <div className="grid gap-1.5" key={f.key}>
+                <Label htmlFor={f.key}>{f.label}</Label>
+                <Input
+                  id={f.key}
+                  value={details[f.key] ?? ""}
+                  onChange={(e) => setDetail(f.key, e.target.value)}
+                  placeholder={f.placeholder}
+                />
+              </div>
+            ))}
+          </div>
+
           <div>
             <Button type="submit" disabled={pending}>
               {pending ? "Saving…" : "Save profile"}

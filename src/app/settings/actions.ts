@@ -12,20 +12,21 @@ export async function saveProfile(input: {
   email: string;
   phone: string;
   linkedinUrl: string;
-  detailsJson: string;
+  details: Record<string, string>;
 }): Promise<ActionResult> {
-  const detailsJson = input.detailsJson.trim() || "{}";
-  try {
-    JSON.parse(detailsJson);
-  } catch {
-    return { ok: false, message: "Additional fields must be valid JSON." };
+  // Structured application-form answers, stored as JSON in detailsJson.
+  // Drop empties so the stored object stays tidy.
+  const details: Record<string, string> = {};
+  for (const [key, value] of Object.entries(input.details ?? {})) {
+    const val = (value ?? "").trim();
+    if (val) details[key] = val;
   }
   const data = {
     fullName: input.fullName.trim(),
     email: input.email.trim(),
     phone: input.phone.trim() || null,
     linkedinUrl: input.linkedinUrl.trim() || null,
-    detailsJson,
+    detailsJson: JSON.stringify(details),
   };
   await prisma.profile.upsert({
     where: { id: "singleton" },
