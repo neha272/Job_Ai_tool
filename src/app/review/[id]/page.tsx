@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/card";
 import { ReviewClient } from "./review-client";
 import { PortalPanel } from "./portal-panel";
+import { TrackingCard } from "./tracking-card";
 import type { Status } from "@/lib/status";
 
 export const dynamic = "force-dynamic";
@@ -191,6 +192,17 @@ export default async function ReviewPage({
             hasApplyUrl={!!(app.job.applyUrl || app.job.url)}
             restricted={app.job.sourceRestricted}
             status={app.status}
+          />
+
+          <TrackingCard
+            appId={app.id}
+            status={app.status}
+            notes={app.notes ?? ""}
+            followUpDate={
+              app.followUpAt
+                ? new Date(app.followUpAt).toISOString().slice(0, 10)
+                : ""
+            }
           />
         </section>
       </div>
