@@ -1,9 +1,11 @@
 "use server";
 
 import { redirect } from "next/navigation";
+import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { fetchJobText, isRestrictedUrl } from "@/lib/jobs/fetch-url";
 import { tailorApplication } from "@/lib/pipeline/tailor-application";
+import { runDiscovery } from "@/lib/discovery/run-discovery";
 import { logger } from "@/lib/logger";
 import type { ActionResult } from "@/app/settings/types";
 
@@ -76,4 +78,47 @@ export async function createAndTailor(input: {
   }
 
   redirect(`/review/${appId}`);
+}
+
+export async function tailorExistingJob(jobId: string): Promise<ActionResult> {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return {
+      ok: false,
+      message: "ANTHROPIC_API_KEY is not set. Add it to .env and restart the dev server.",
+    };
+  }
+  const base = await prisma.resume.findFirst({ where: { isBase: true } });
+  if (!base) {
+    return { ok: false, message: "Add your base résumé in Settings first." };
+  }
+  let appId: string;
+  try {
+    appId = await tailorApplication({ jobId });
+  } catch (e) {
+    logger.error("pipeline", "tailoring failed", { err: String(e) });
+    return {
+      ok: false,
+      message: e instanceof Error ? e.message : "Tailoring failed.",
+    };
+  }
+  redirect(`/review/${appId}`);
+}
+
+export async function discoverNow(): Promise<ActionResult> {
+  const r = await runDiscovery();
+  revalidatePath("/jobs");
+  const bits = [`${r.created} new`, `${r.fetched} fetched`];
+  if (r.scored) bits.push(`${r.scored} scored`);
+  if (r.scoreSkipped) bits.push(`${r.scoreSkipped} left unscored (per-run cap)`);
+  const summary = bits.join(" · ");
+  if (r.errors.length > 0) {
+    return {
+      ok: r.created > 0,
+      message: `${summary}. Source error: ${r.errors[0]}`,
+    };
+  }
+  return {
+    ok: true,
+    message: r.created > 0 ? summary : `No new jobs (${r.fetched} fetched).`,
+  };
 }
