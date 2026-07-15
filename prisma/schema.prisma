@@ -47,6 +47,7 @@ model Application {
   status           String     @default("found") // found | tailoring | pending_review | approved | applied | interviewing | offer | rejected | withdrawn
   draftEmail       String?
   fabricationFlags String? // JSON array of anything the fabrication check flagged
+  changeLog        String? // JSON array of {section, what, why} from the tailoring pass
   notes            String?
   appliedAt        DateTime?
   followUpAt       DateTime?
