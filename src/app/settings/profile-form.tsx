@@ -22,32 +22,25 @@ export interface ProfileData {
   detailsJson: string;
 }
 
-// Common questions job portals ask. Stored (keyed) in Profile.detailsJson for
-// autofill later; each is an optional free-text field.
+// Common questions job applications ask. Stored (keyed) in Profile.detailsJson
+// and auto-filled into portal forms. All optional free-text — put whatever you
+// want submitted (e.g. "Prefer not to say", "Yes", "No").
 const DETAIL_FIELDS = [
   { key: "github", label: "GitHub", placeholder: "https://github.com/username" },
   { key: "portfolio", label: "Portfolio / website", placeholder: "https://…" },
-  {
-    key: "workAuthorization",
-    label: "Authorized to work in the US?",
-    placeholder: "Yes / No",
-  },
-  {
-    key: "sponsorship",
-    label: "Requires visa sponsorship?",
-    placeholder: "Yes / No",
-  },
-  { key: "location", label: "Current location", placeholder: "City, State" },
-  {
-    key: "yearsExperience",
-    label: "Years of experience",
-    placeholder: "e.g. 3",
-  },
-  {
-    key: "heardAbout",
-    label: "How did you hear about us?",
-    placeholder: "(optional)",
-  },
+  { key: "country", label: "What country are you based in?", placeholder: "United States" },
+  { key: "location", label: "Current location (city, state)", placeholder: "New York, NY" },
+  { key: "workAuthorization", label: "Authorized to work in this location?", placeholder: "Yes" },
+  { key: "sponsorship", label: "Will you require visa sponsorship?", placeholder: "No" },
+  { key: "relocate", label: "Willing to relocate / work in-office as required?", placeholder: "Yes" },
+  { key: "yearsExperience", label: "Years of experience", placeholder: "3" },
+  { key: "pronouns", label: "Preferred gender pronouns", placeholder: "she/her" },
+  { key: "heardAbout", label: "How did you hear about us?", placeholder: "Company website" },
+  { key: "gender", label: "Gender", placeholder: "e.g. Female / Male / Prefer not to say" },
+  { key: "hispanicLatino", label: "Are you Hispanic/Latino?", placeholder: "No / Yes / Prefer not to say" },
+  { key: "race", label: "Race / ethnicity", placeholder: "e.g. Asian / Prefer not to say" },
+  { key: "veteran", label: "Veteran status", placeholder: "I am not a protected veteran" },
+  { key: "disability", label: "Disability status", placeholder: "No / Prefer not to say" },
 ] as const;
 
 function parseDetails(json: string): Record<string, string> {
@@ -100,8 +93,9 @@ export function ProfileForm({ profile }: { profile: ProfileData | null }) {
       <CardHeader>
         <CardTitle>Your details</CardTitle>
         <CardDescription>
-          Used to draft application emails and to auto-fill portal forms. Stays
-          on this machine.
+          Used to draft emails and auto-fill applications. Stays on this machine.
+          Fill in the application questions below — the portal autofill uses these
+          answers, so anything you leave blank may be left blank on the form.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -109,50 +103,27 @@ export function ProfileForm({ profile }: { profile: ProfileData | null }) {
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="grid gap-1.5">
               <Label htmlFor="fullName">Full name</Label>
-              <Input
-                id="fullName"
-                value={fullName}
-                onChange={(e) => setFullName(e.target.value)}
-                placeholder="Jane Doe"
-                required
-              />
+              <Input id="fullName" value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Jane Doe" required />
             </div>
             <div className="grid gap-1.5">
               <Label htmlFor="email">Email</Label>
-              <Input
-                id="email"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="jane@example.com"
-                required
-              />
+              <Input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="jane@example.com" required />
             </div>
             <div className="grid gap-1.5">
               <Label htmlFor="phone">Phone</Label>
-              <Input
-                id="phone"
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                placeholder="(optional)"
-              />
+              <Input id="phone" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="(optional)" />
             </div>
             <div className="grid gap-1.5">
               <Label htmlFor="linkedinUrl">LinkedIn URL</Label>
-              <Input
-                id="linkedinUrl"
-                value={linkedinUrl}
-                onChange={(e) => setLinkedinUrl(e.target.value)}
-                placeholder="(optional)"
-              />
+              <Input id="linkedinUrl" value={linkedinUrl} onChange={(e) => setLinkedinUrl(e.target.value)} placeholder="(optional)" />
             </div>
           </div>
 
           <div className="border-t border-border pt-4">
-            <p className="text-sm font-medium">Application fields</p>
+            <p className="text-sm font-medium">Application questions</p>
             <p className="text-xs text-muted-foreground">
-              Common questions portals ask — used to auto-fill applications
-              later. All optional.
+              Common questions portals ask. Your answers are auto-filled into
+              applications. All optional.
             </p>
           </div>
           <div className="grid gap-4 sm:grid-cols-2">

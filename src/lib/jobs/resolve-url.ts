@@ -13,19 +13,11 @@ export interface ResolvedJob {
   restricted: boolean;
 }
 
-// LinkedIn/Indeed prohibit automated access; a pasted single link is just
-// reading a page, but the posting is marked restricted so the automated submit
-// path stays off.
 const RESTRICTED = ["linkedin.com", "indeed.com"];
 function isRestricted(host: string): boolean {
   return RESTRICTED.some((r) => host === r || host.endsWith(`.${r}`));
 }
 
-/**
- * Turn a pasted job URL into a normalized job. Direct Greenhouse/Lever/Ashby
- * links resolve cleanly via their APIs; anything else falls back to reading the
- * page's HTML (best-effort — good for static pages, weak for JS-heavy ones).
- */
 export async function resolveJob(rawUrl: string): Promise<ResolvedJob> {
   const url = rawUrl.trim();
   let u: URL;
@@ -38,9 +30,22 @@ export async function resolveJob(rawUrl: string): Promise<ResolvedJob> {
   const segs = u.pathname.split("/").filter(Boolean);
 
   try {
-    if (host.endsWith("greenhouse.io")) {
-      const g = await fromGreenhouse(segs, u);
+    // Embedded Greenhouse on a company domain (e.g. brex.com/careers/ID?gh_jid=ID):
+    // derive the board token from the hostname and use the Greenhouse API. The
+    // original URL (incl. any gh_src referral) is preserved as the apply link.
+    const ghJid = u.searchParams.get("gh_jid");
+    if (ghJid && !host.endsWith("greenhouse.io")) {
+      const token = host.replace(/^www\./, "").split(".")[0];
+      const g = await greenhouseFetch(token, ghJid, url);
       if (g) return g;
+    }
+
+    if (host.endsWith("greenhouse.io")) {
+      const ji = segs.indexOf("jobs");
+      if (ji >= 1 && segs[ji + 1]) {
+        const g = await greenhouseFetch(segs[ji - 1], segs[ji + 1].replace(/\D/g, ""));
+        if (g) return g;
+      }
     } else if (host.endsWith("lever.co")) {
       const l = await fromLever(segs, u);
       if (l) return l;
@@ -55,12 +60,11 @@ export async function resolveJob(rawUrl: string): Promise<ResolvedJob> {
   return fromGeneric(u, url, isRestricted(host));
 }
 
-async function fromGreenhouse(segs: string[], u: URL): Promise<ResolvedJob | null> {
-  // .../{token}/jobs/{id}
-  const ji = segs.indexOf("jobs");
-  if (ji < 1 || !segs[ji + 1]) return null;
-  const token = segs[ji - 1];
-  const id = segs[ji + 1].replace(/\D/g, "");
+async function greenhouseFetch(
+  token: string,
+  id: string,
+  urlOverride?: string,
+): Promise<ResolvedJob | null> {
   if (!token || !id) return null;
   const res = await fetch(
     `https://boards-api.greenhouse.io/v1/boards/${token}/jobs/${id}?content=true`,
@@ -75,29 +79,28 @@ async function fromGreenhouse(segs: string[], u: URL): Promise<ResolvedJob | nul
   };
   if (!j.title) return null;
   const html = j.content ? decode(j.content) : "";
+  const link = urlOverride || j.absolute_url || "";
   return {
     source: "greenhouse",
     company: token,
     title: j.title,
     location: j.location?.name ?? null,
     descriptionText: htmlToPlain(html),
-    url: j.absolute_url || u.toString(),
-    applyUrl: j.absolute_url ?? null,
+    url: link,
+    applyUrl: link || null,
     restricted: false,
   };
 }
 
 async function fromLever(segs: string[], u: URL): Promise<ResolvedJob | null> {
-  // jobs.lever.co/{token}/{id}
   if (segs.length < 2) return null;
   const [token, id] = segs;
   const apiHost = u.hostname.includes(".eu.")
     ? "https://api.eu.lever.co"
     : "https://api.lever.co";
-  const res = await fetch(
-    `${apiHost}/v0/postings/${token}/${id}?mode=json`,
-    { headers: { accept: "application/json" } },
-  );
+  const res = await fetch(`${apiHost}/v0/postings/${token}/${id}?mode=json`, {
+    headers: { accept: "application/json" },
+  });
   if (!res.ok) return null;
   const p = (await res.json()) as {
     text?: string;
@@ -121,7 +124,6 @@ async function fromLever(segs: string[], u: URL): Promise<ResolvedJob | null> {
 }
 
 async function fromAshby(segs: string[], u: URL): Promise<ResolvedJob | null> {
-  // jobs.ashbyhq.com/{token}/{id}
   if (segs.length < 2) return null;
   const [token, id] = segs;
   const res = await fetch(

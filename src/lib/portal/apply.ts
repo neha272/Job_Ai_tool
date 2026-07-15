@@ -2,6 +2,7 @@ import "server-only";
 import type { Page, Frame, Locator } from "playwright";
 import { getPortalContext } from "./browser";
 import { detectWall, wallMessage } from "./detect";
+import { generateText } from "@/lib/llm";
 import { logger } from "@/lib/logger";
 
 export interface ApplyProfile {
@@ -12,6 +13,13 @@ export interface ApplyProfile {
   details: Record<string, string>;
 }
 
+export interface CoverContext {
+  resumeText: string;
+  company: string;
+  title: string;
+  jobText: string;
+}
+
 export interface ApplyResult {
   status: "filled" | "needs_you" | "error";
   wall?: string;
@@ -20,15 +28,14 @@ export interface ApplyResult {
 }
 
 type Target = Page | Frame;
-
-// A form is "present" once we can see a file input or an email field.
 const FIELD_PROBE =
-  'input[type="file"], input[type="email"], input[name*="email" i], input[id*="email" i]';
+  'input[type="file"], input[type="email"], input[name*="email" i], input[id*="email" i], textarea';
 
 export async function openAndFill(
   applyUrl: string,
   pdfPath: string | null,
   profile: ApplyProfile,
+  cover?: CoverContext,
 ): Promise<ApplyResult> {
   const ctx = await getPortalContext();
   const page = await ctx.newPage();
@@ -39,9 +46,7 @@ export async function openAndFill(
     return {
       status: "error",
       filled: [],
-      message: `Couldn't open the page: ${
-        e instanceof Error ? e.message : "navigation failed"
-      }`,
+      message: `Couldn't open the page: ${e instanceof Error ? e.message : "navigation failed"}`,
     };
   }
 
@@ -49,8 +54,6 @@ export async function openAndFill(
   if (wall) return { status: "needs_you", wall, filled: [], message: wallMessage(wall) };
 
   await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => {});
-
-  // Find the form; if none, the form may be behind an "Apply" button.
   let target = await findFormTarget(page);
   if (!target) {
     await tryClickApply(page);
@@ -66,12 +69,13 @@ export async function openAndFill(
       status: "filled",
       filled: [],
       message:
-        "Opened the page, but I couldn't find an application form to fill automatically. Complete and submit it in the browser window.",
+        "Opened the page, but I couldn't find an application form to fill. Complete and submit it in the browser window.",
     };
   }
 
   const filled = await autofill(target, profile);
   if (pdfPath && (await uploadResume(target, pdfPath))) filled.push("résumé");
+  if (cover && (await fillCoverLetter(target, cover))) filled.push("cover letter");
 
   wall = await detectWall(page);
   if (wall) return { status: "needs_you", wall, filled, message: wallMessage(wall) };
@@ -81,12 +85,11 @@ export async function openAndFill(
     status: "filled",
     filled,
     message: filled.length
-      ? `Filled ${filled.join(", ")}. Review the open browser window, complete anything left, and click Submit yourself.`
+      ? `Filled ${filled.join(", ")}. Review the browser window, complete anything left, and click Submit yourself.`
       : "Opened the form but couldn't map its fields. Fill and submit it in the browser window.",
   };
 }
 
-// Search the main frame and any iframes (Greenhouse embeds a form in an iframe).
 async function findFormTarget(page: Page): Promise<Target | null> {
   for (let attempt = 0; attempt < 4; attempt++) {
     for (const f of page.frames()) {
@@ -117,73 +120,111 @@ async function tryClickApply(page: Page): Promise<void> {
   }
 }
 
-async function autofill(target: Target, profile: ApplyProfile): Promise<string[]> {
-  const filled: string[] = [];
-  const parts = profile.fullName.trim().split(/\s+/);
+async function autofill(target: Target, p: ApplyProfile): Promise<string[]> {
+  const parts = p.fullName.trim().split(/\s+/);
   const first = parts[0] ?? "";
   const last = parts.slice(1).join(" ");
-  const d = profile.details;
+  const d = p.details;
 
-  const fields: Array<{ label: string; phrases: string[]; attrs: string[]; value: string }> = [
-    { label: "first name", phrases: ["first name", "given name"], attrs: ["first"], value: first },
-    { label: "last name", phrases: ["last name", "family name", "surname"], attrs: ["last", "surname"], value: last },
-    { label: "full name", phrases: ["full name", "your name", "name"], attrs: ["fullname", "full_name"], value: profile.fullName },
-    { label: "email", phrases: ["email"], attrs: ["email"], value: profile.email },
-    { label: "phone", phrases: ["phone", "mobile"], attrs: ["phone", "mobile", "tel"], value: profile.phone ?? "" },
-    { label: "LinkedIn", phrases: ["linkedin"], attrs: ["linkedin"], value: profile.linkedinUrl ?? "" },
-    { label: "GitHub", phrases: ["github"], attrs: ["github"], value: d.github ?? "" },
-    { label: "website", phrases: ["portfolio", "website", "personal site"], attrs: ["website", "portfolio", "url"], value: d.portfolio ?? "" },
-    { label: "location", phrases: ["location", "city"], attrs: ["location", "city"], value: d.location ?? "" },
+  // Order matters: more specific fields first so a generic keyword ("name",
+  // "gender") doesn't claim a more specific control ("first name", "pronouns").
+  const fields: { label: string; keywords: string[]; value: string }[] = [
+    { label: "first name", keywords: ["first name", "given name", "first"], value: first },
+    { label: "last name", keywords: ["last name", "family name", "surname", "last"], value: last },
+    { label: "full name", keywords: ["full name", "your name", "legal name", "name"], value: p.fullName },
+    { label: "email", keywords: ["email"], value: p.email },
+    { label: "phone", keywords: ["phone", "mobile", "tel"], value: p.phone ?? "" },
+    { label: "LinkedIn", keywords: ["linkedin"], value: p.linkedinUrl ?? "" },
+    { label: "GitHub", keywords: ["github"], value: d.github ?? "" },
+    { label: "website", keywords: ["portfolio", "website", "personal site"], value: d.portfolio ?? "" },
+    { label: "country", keywords: ["country"], value: d.country ?? "" },
+    { label: "location", keywords: ["location", "current city", "city"], value: d.location ?? "" },
+    { label: "work authorization", keywords: ["authorized to work", "work authorization", "legally authorized"], value: d.workAuthorization ?? "" },
+    { label: "sponsorship", keywords: ["sponsorship", "require sponsorship", "visa"], value: d.sponsorship ?? "" },
+    { label: "relocate", keywords: ["relocate", "in-office", "in office", "onsite", "on-site"], value: d.relocate ?? "" },
+    { label: "years experience", keywords: ["years of experience", "years experience"], value: d.yearsExperience ?? "" },
+    { label: "pronouns", keywords: ["pronoun"], value: d.pronouns ?? "" },
+    { label: "how heard", keywords: ["how did you hear", "referral source", "source"], value: d.heardAbout ?? "" },
+    { label: "gender", keywords: ["gender"], value: d.gender ?? "" },
+    { label: "hispanic/latino", keywords: ["hispanic", "latino"], value: d.hispanicLatino ?? "" },
+    { label: "race", keywords: ["race", "ethnicity"], value: d.race ?? "" },
+    { label: "veteran", keywords: ["veteran"], value: d.veteran ?? "" },
+    { label: "disability", keywords: ["disability"], value: d.disability ?? "" },
   ];
 
   const used = new Set<string>();
+  const filled: string[] = [];
   for (const f of fields) {
     if (!f.value.trim()) continue;
-    if (await fillOne(target, f.phrases, f.attrs, f.value, used)) filled.push(f.label);
+    if (await fillField(target, f.keywords, f.value, used)) filled.push(f.label);
   }
   return filled;
 }
 
-async function fillOne(
+async function fillField(
   target: Target,
-  phrases: string[],
-  attrs: string[],
+  keywords: string[],
   value: string,
   used: Set<string>,
 ): Promise<boolean> {
-  const tryFill = async (loc: Locator): Promise<boolean> => {
-    try {
-      if (!(await loc.count())) return false;
-      if (!(await loc.isEditable({ timeout: 500 }).catch(() => false))) return false;
-      const key = await fieldKey(loc);
-      if (used.has(key)) return false;
-      await loc.fill(value, { timeout: 2000 });
-      used.add(key);
-      return true;
-    } catch {
-      return false;
-    }
-  };
-
-  for (const phrase of phrases) {
-    const byLabel = target
-      .getByLabel(new RegExp(phrase.replace(/\s+/g, "\\s*"), "i"))
-      .first();
-    if (await tryFill(byLabel)) return true;
+  // 1) by accessible label (matches text inputs AND <select>)
+  for (const kw of keywords) {
+    const loc = target.getByLabel(new RegExp(kw.replace(/\s+/g, "\\s*"), "i")).first();
+    if (await handleControl(loc, value, used)) return true;
   }
-  for (const attr of attrs) {
-    const sel = [
-      `input[name*="${attr}" i]`,
-      `input[id*="${attr}" i]`,
-      `input[placeholder*="${attr}" i]`,
-      `input[aria-label*="${attr}" i]`,
-    ].join(",");
-    if (await tryFill(target.locator(sel).first())) return true;
+  // 2) by attribute substring — inputs and selects
+  for (const kw of keywords) {
+    const attr = kw.replace(/\s+/g, "");
+    const input = target
+      .locator(`input[name*="${attr}" i], input[id*="${attr}" i], input[placeholder*="${attr}" i], input[aria-label*="${attr}" i]`)
+      .first();
+    if (await handleControl(input, value, used)) return true;
+    const select = target
+      .locator(`select[name*="${attr}" i], select[id*="${attr}" i], select[aria-label*="${attr}" i]`)
+      .first();
+    if (await handleSelect(select, value, used)) return true;
   }
   return false;
 }
 
-async function fieldKey(loc: Locator): Promise<string> {
+async function handleControl(loc: Locator, value: string, used: Set<string>): Promise<boolean> {
+  try {
+    if (!(await loc.count())) return false;
+    const tag = ((await loc.evaluate((el) => el.tagName).catch(() => "")) as string) || "";
+    if (tag === "SELECT") return handleSelect(loc, value, used);
+    if (!(await loc.isEditable({ timeout: 400 }).catch(() => false))) return false;
+    const key = await keyOf(loc);
+    if (used.has(key)) return false;
+    await loc.fill(value, { timeout: 2000 });
+    used.add(key);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function handleSelect(loc: Locator, value: string, used: Set<string>): Promise<boolean> {
+  try {
+    if (!(await loc.count())) return false;
+    const key = await keyOf(loc);
+    if (used.has(key)) return false;
+    const opts = await loc.locator("option").allTextContents();
+    const vl = value.trim().toLowerCase();
+    let idx = opts.findIndex((o) => o.trim().toLowerCase() === vl);
+    if (idx < 0)
+      idx = opts.findIndex(
+        (o) => o.trim() && (o.toLowerCase().includes(vl) || vl.includes(o.trim().toLowerCase())),
+      );
+    if (idx < 0) return false;
+    await loc.selectOption({ index: idx });
+    used.add(key);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function keyOf(loc: Locator): Promise<string> {
   const name = await loc.getAttribute("name").catch(() => null);
   const id = await loc.getAttribute("id").catch(() => null);
   return name || id || Math.random().toString(36).slice(2);
@@ -200,4 +241,41 @@ async function uploadResume(target: Target, pdfPath: string): Promise<boolean> {
     /* no file input */
   }
   return false;
+}
+
+async function fillCoverLetter(target: Target, cover: CoverContext): Promise<boolean> {
+  // Only if the form actually asks for one.
+  let field = target.getByLabel(/cover letter/i).first();
+  if (!(await field.count().catch(() => 0))) {
+    field = target
+      .locator('textarea[name*="cover" i], textarea[id*="cover" i], textarea[aria-label*="cover" i]')
+      .first();
+  }
+  if (!(await field.count().catch(() => 0))) return false;
+  if (!(await field.isEditable({ timeout: 400 }).catch(() => false))) return false;
+
+  try {
+    const letter = await generateText({
+      system:
+        "You write concise, truthful cover letters. Use ONLY facts present in the résumé — never invent employers, skills, degrees, or metrics. Exactly 3 short paragraphs, plain text, no markdown, no bracketed placeholders.",
+      prompt: [
+        `Write a cover letter for the "${cover.title}" role at ${cover.company}.`,
+        "",
+        "RÉSUMÉ:",
+        cover.resumeText.slice(0, 12000),
+        "",
+        "JOB DESCRIPTION:",
+        cover.jobText.slice(0, 8000),
+        "",
+        "Return only the letter text.",
+      ].join("\n"),
+      maxTokens: 1400,
+      tier: "quality",
+    });
+    if (letter.trim().length < 40) return false;
+    await field.fill(letter.trim(), { timeout: 3000 });
+    return true;
+  } catch {
+    return false;
+  }
 }

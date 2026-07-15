@@ -36,13 +36,24 @@ export async function prepareInPortal(appId: string): Promise<PortalResult> {
   try {
     // Dynamic import keeps Playwright out of the bundle unless this runs.
     const { openAndFill } = await import("@/lib/portal/apply");
-    const res = await openAndFill(applyUrl, app.resume.pdfPath, {
-      fullName: profile.fullName,
-      email: profile.email,
-      phone: profile.phone,
-      linkedinUrl: profile.linkedinUrl,
-      details,
-    });
+    const { stripLatex } = await import("@/lib/resume-facts");
+    const res = await openAndFill(
+      applyUrl,
+      app.resume.pdfPath,
+      {
+        fullName: profile.fullName,
+        email: profile.email,
+        phone: profile.phone,
+        linkedinUrl: profile.linkedinUrl,
+        details,
+      },
+      {
+        resumeText: stripLatex(app.resume.texSource).slice(0, 12000),
+        company: app.job.company,
+        title: app.job.title,
+        jobText: app.job.descriptionRaw,
+      },
+    );
     return {
       ok: res.status !== "error",
       message: res.message,
