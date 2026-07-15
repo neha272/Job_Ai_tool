@@ -10,6 +10,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { ReviewClient } from "./review-client";
+import { PortalPanel } from "./portal-panel";
 import type { Status } from "@/lib/status";
 
 export const dynamic = "force-dynamic";
@@ -183,6 +184,13 @@ export default async function ReviewPage({
             initialDraft={draft}
             status={app.status}
             compiled={compiled}
+          />
+
+          <PortalPanel
+            appId={app.id}
+            hasApplyUrl={!!(app.job.applyUrl || app.job.url)}
+            restricted={app.job.sourceRestricted}
+            status={app.status}
           />
         </section>
       </div>
