@@ -48,6 +48,21 @@ export function sanitizeForTectonic(tex: string): { tex: string; notes: string[]
     notes.push("Removed pdfTeX-only glyphtounicode directives.");
   }
 
+  // LLMs often emit unescaped & in prose (a "misplaced alignment tab" error).
+  // Escape bare & outside tabular-like environments, where & is real alignment.
+  {
+    const blocks: string[] = [];
+    const envRe =
+      /\\begin\{(tabular\*?|tabularx|array|longtable|align\*?|matrix|split|cases)\}[\s\S]*?\\end\{\1\}/g;
+    const masked = out.replace(envRe, (x) => {
+      blocks.push(x);
+      return `@@JCBLK${blocks.length - 1}@@`;
+    });
+    const escaped = masked.replace(/(?<!\\)&/g, "\\&");
+    if (escaped !== masked) notes.push("Escaped unescaped & characters in text.");
+    out = escaped.replace(/@@JCBLK(\d+)@@/g, (_, i) => blocks[Number(i)]);
+  }
+
   return { tex: out, notes };
 }
 

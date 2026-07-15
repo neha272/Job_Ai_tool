@@ -13,6 +13,7 @@ ABSOLUTE RULES — never violate these:
 - Never change a factual number (dates, durations, quantities, percentages, GPAs) to a different value. You may keep, drop, or re-emphasize a real fact — never fabricate or inflate one.
 - Preserve the LaTeX so it still compiles: keep the document class, packages, and any custom commands/macros. Only edit human-readable content (bullet wording, ordering, the summary, skills emphasis). Do not introduce packages that weren't already used.
 - Keep the writing truthful, specific, and ATS-friendly.
+- Escape LaTeX special characters in prose: write \\& \\% \\$ \\# \\_ (never a bare & % $ # _), except inside a tabular alignment or math. Keep the document compilable.
 
 Your task: make the candidate's REAL experience read as clearly relevant to this specific role. Reorder sections and bullets so the most relevant material comes first; reword bullets to mirror the job's language ONLY where the underlying fact already supports it; adjust emphasis. Return the complete revised LaTeX document, not a fragment.`;
 
