@@ -3,11 +3,13 @@ import { prisma } from "@/lib/prisma";
 import { fetchPostings } from "@/lib/sources/normalize";
 import type { BoardType } from "@/lib/sources/types";
 import { scoreFit } from "@/lib/anthropic/score";
+import { isUsLocation } from "@/lib/jobs/location";
 import { hasAnthropic } from "@/lib/llm";
 import { logger } from "@/lib/logger";
 
 export interface DiscoveryResult {
   fetched: number;
+  filteredOut: number;
   created: number;
   scored: number;
   scoreSkipped: number;
@@ -22,6 +24,7 @@ export async function runDiscovery(): Promise<DiscoveryResult> {
 
   const result: DiscoveryResult = {
     fetched: 0,
+    filteredOut: 0,
     created: 0,
     scored: 0,
     scoreSkipped: 0,
@@ -33,8 +36,6 @@ export async function runDiscovery(): Promise<DiscoveryResult> {
     return result;
   }
 
-  // Cap scoring per run so a large board doesn't fan out into hundreds of model
-  // calls; the local model is slower, so use a smaller cap without a key.
   const scoreCap = hasAnthropic() ? 25 : 8;
   const canScore = !!base;
 
@@ -51,6 +52,12 @@ export async function runDiscovery(): Promise<DiscoveryResult> {
     result.fetched += postings.length;
 
     for (const p of postings) {
+      // Hard filter: US-based roles only.
+      if (!isUsLocation(p.location)) {
+        result.filteredOut++;
+        continue;
+      }
+
       // Dedupe on (source, url) — the stable identity of a posting.
       const existing = await prisma.jobPosting.findFirst({
         where: { source: p.source, url: p.url },

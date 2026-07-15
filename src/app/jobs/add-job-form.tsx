@@ -16,11 +16,10 @@ import {
 } from "@/components/ui/card";
 
 export function AddJobForm() {
+  const [sourceUrl, setSourceUrl] = useState("");
   const [company, setCompany] = useState("");
   const [title, setTitle] = useState("");
   const [recipientEmail, setRecipientEmail] = useState("");
-  const [location, setLocation] = useState("");
-  const [sourceUrl, setSourceUrl] = useState("");
   const [jobText, setJobText] = useState("");
   const [pending, startTransition] = useTransition();
 
@@ -31,7 +30,6 @@ export function AddJobForm() {
         company,
         title,
         recipientEmail,
-        location,
         sourceUrl,
         jobText,
       });
@@ -43,81 +41,77 @@ export function AddJobForm() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Process a job</CardTitle>
+        <CardTitle>Process a job — just paste the link</CardTitle>
         <CardDescription>
-          Paste a job description (or a link). Claude tailors your base résumé,
-          compiles it, and takes you to a review screen. This calls the model
-          and compiles a PDF — it can take up to a minute.
+          Paste a job link and the company, title, and description fill in
+          automatically, then Claude tailors your résumé and takes you to a
+          review screen. Takes up to a minute.
         </CardDescription>
       </CardHeader>
       <CardContent>
         <form onSubmit={onSubmit} className="grid gap-4">
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="grid gap-1.5">
-              <Label htmlFor="company">Company</Label>
-              <Input
-                id="company"
-                value={company}
-                onChange={(e) => setCompany(e.target.value)}
-                placeholder="Acme"
-                required
-              />
-            </div>
-            <div className="grid gap-1.5">
-              <Label htmlFor="title">Role title</Label>
-              <Input
-                id="title"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder="Data Analyst"
-                required
-              />
-            </div>
-            <div className="grid gap-1.5">
-              <Label htmlFor="recipientEmail">Recipient email</Label>
-              <Input
-                id="recipientEmail"
-                type="email"
-                value={recipientEmail}
-                onChange={(e) => setRecipientEmail(e.target.value)}
-                placeholder="recruiter@acme.com (can add later)"
-              />
-            </div>
-            <div className="grid gap-1.5">
-              <Label htmlFor="location">Location</Label>
-              <Input
-                id="location"
-                value={location}
-                onChange={(e) => setLocation(e.target.value)}
-                placeholder="(optional)"
-              />
-            </div>
-          </div>
-
           <div className="grid gap-1.5">
-            <Label htmlFor="jobText">Job description</Label>
-            <Textarea
-              id="jobText"
-              value={jobText}
-              onChange={(e) => setJobText(e.target.value)}
-              placeholder="Paste the full job description here…"
-              className="min-h-48"
-            />
-          </div>
-
-          <div className="grid gap-1.5">
-            <Label htmlFor="sourceUrl">…or a job URL</Label>
+            <Label htmlFor="sourceUrl">Job link</Label>
             <Input
               id="sourceUrl"
               value={sourceUrl}
               onChange={(e) => setSourceUrl(e.target.value)}
-              placeholder="https://… (fetched only if the box above is empty)"
+              placeholder="https://jobs.ashbyhq.com/… · jobs.lever.co/… · job-boards.greenhouse.io/…"
             />
             <p className="text-xs text-muted-foreground">
-              A LinkedIn/Indeed link is read as a single page and flagged so the
-              automated submit path stays off — you&apos;ll finish those by hand.
+              Works best with a direct Greenhouse, Lever, or Ashby job link.
+              LinkedIn/Indeed pages often don&apos;t read cleanly — for those,
+              paste the description under &ldquo;Enter details manually&rdquo;.
             </p>
           </div>
+
+          <details className="rounded-lg border border-border px-3 py-2">
+            <summary className="cursor-pointer text-sm text-muted-foreground">
+              Enter details manually (optional)
+            </summary>
+            <div className="mt-3 grid gap-4">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="grid gap-1.5">
+                  <Label htmlFor="company">Company</Label>
+                  <Input
+                    id="company"
+                    value={company}
+                    onChange={(e) => setCompany(e.target.value)}
+                    placeholder="(auto-filled from the link)"
+                  />
+                </div>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="title">Role title</Label>
+                  <Input
+                    id="title"
+                    value={title}
+                    onChange={(e) => setTitle(e.target.value)}
+                    placeholder="(auto-filled from the link)"
+                  />
+                </div>
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="recipientEmail">Recipient email</Label>
+                <Input
+                  id="recipientEmail"
+                  type="email"
+                  value={recipientEmail}
+                  onChange={(e) => setRecipientEmail(e.target.value)}
+                  placeholder="recruiter@company.com (for the email method; can add later)"
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="jobText">Job description</Label>
+                <Textarea
+                  id="jobText"
+                  value={jobText}
+                  onChange={(e) => setJobText(e.target.value)}
+                  placeholder="Paste the description here if the link doesn't read cleanly…"
+                  className="min-h-40"
+                />
+              </div>
+            </div>
+          </details>
 
           <div>
             <Button type="submit" disabled={pending}>
