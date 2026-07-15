@@ -14,33 +14,96 @@ export interface CompileResult {
   ok: boolean;
   pdfPath?: string;
   log?: string;
+  notes?: string[];
 }
 
-/** Compiles LaTeX to PDF with Tectonic. `id` namespaces the output directory. */
+/**
+ * Make LaTeX safe for Tectonic (XeTeX). Résumé templates (e.g. "Jake's Resume")
+ * commonly use bits that crash or error under XeTeX:
+ *  - `fontawesome5` aborts XeTeX when its OTF fonts aren't installed.
+ *  - `\input{glyphtounicode}` / `\pdfgentounicode` are pdfTeX-only primitives.
+ * We strip these at compile time only — the stored résumé is left untouched.
+ */
+export function sanitizeForTectonic(tex: string): { tex: string; notes: string[] } {
+  const notes: string[] = [];
+  let out = tex;
+
+  if (/\\usepackage(\[[^\]]*\])?\{fontawesome5\}/.test(out)) {
+    out = out.replace(/\\usepackage(\[[^\]]*\])?\{fontawesome5\}[ \t]*\r?\n?/g, "");
+    // Stub the used \fa* icon commands (fa + Uppercase) so nothing is undefined.
+    const names = new Set<string>();
+    for (const m of out.matchAll(/\\(fa[A-Z][A-Za-z]*)\b/g)) names.add(m[1]);
+    if (names.size > 0) {
+      const defs = [...names]
+        .map((n) => `\\providecommand{\\${n}}[1][]{}`)
+        .join("\n");
+      out = out.replace(/(\\documentclass[^\n]*\r?\n)/, `$1${defs}\n`);
+    }
+    notes.push("Removed FontAwesome icons (unsupported by the local PDF engine).");
+  }
+
+  if (/\\input\{glyphtounicode\}|\\pdf(gen|glyph)tounicode/.test(out)) {
+    out = out.replace(/\\input\{glyphtounicode\}[ \t]*\r?\n?/g, "");
+    out = out.replace(/^.*\\pdf(gen|glyph)tounicode.*\r?\n?/gm, "");
+    notes.push("Removed pdfTeX-only glyphtounicode directives.");
+  }
+
+  return { tex: out, notes };
+}
+
 export async function compileLatex(
   tex: string,
   id: string,
 ): Promise<CompileResult> {
   const outDir = path.join(STORAGE_DIR, id);
   await mkdir(outDir, { recursive: true });
+  const { tex: safeTex, notes } = sanitizeForTectonic(tex);
   const texPath = path.join(outDir, "resume.tex");
-  await writeFile(texPath, tex, "utf8");
+  await writeFile(texPath, safeTex, "utf8");
 
   try {
-    // --untrusted: the .tex is model-generated, so harden the engine.
+    // --untrusted: the .tex is model-generated. Generous timeout: first compiles
+    // download packages from the network.
     await execFileAsync(
       "tectonic",
       ["-X", "compile", texPath, "--outdir", outDir, "--keep-logs", "--untrusted"],
-      { timeout: 90_000, maxBuffer: 10 * 1024 * 1024 },
+      { timeout: 180_000, maxBuffer: 12 * 1024 * 1024 },
     );
     const pdfPath = path.join(outDir, "resume.pdf");
-    await access(pdfPath); // throws if Tectonic exited 0 but produced no PDF
-    logger.info("latex", "compiled", { id });
-    return { ok: true, pdfPath };
+    await access(pdfPath);
+    logger.info("latex", "compiled", { id, sanitized: notes.length });
+    return { ok: true, pdfPath, notes };
   } catch (err) {
-    const e = err as { stderr?: string; message?: string; code?: unknown };
-    const log = String(e.stderr || e.message || "Unknown Tectonic error");
-    logger.warn("latex", "compile failed", { id, code: String(e.code ?? "") });
-    return { ok: false, log };
+    const e = err as {
+      stderr?: string;
+      stdout?: string;
+      message?: string;
+      code?: unknown;
+      killed?: boolean;
+      signal?: string;
+    };
+    let log: string;
+    if (e.killed || e.signal) {
+      log = `Tectonic stopped (${e.signal || "timeout"}). First compiles can be slow while packages download — try again.`;
+    } else {
+      log =
+        firstError(`${e.stdout ?? ""}\n${e.stderr ?? ""}`) ||
+        String(e.message || "Unknown Tectonic error");
+    }
+    logger.warn("latex", "compile failed", {
+      id,
+      code: String(e.code ?? ""),
+      signal: String(e.signal ?? ""),
+    });
+    return { ok: false, log, notes };
   }
+}
+
+function firstError(output: string): string {
+  const lines = output.split("\n");
+  const idx = lines.findIndex((l) =>
+    /^error:|^!|Undefined control sequence|Emergency stop|Runaway/.test(l),
+  );
+  if (idx < 0) return output.trim().slice(0, 800);
+  return lines.slice(idx, idx + 6).join("\n").trim();
 }

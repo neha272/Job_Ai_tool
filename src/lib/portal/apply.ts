@@ -1,5 +1,5 @@
 import "server-only";
-import type { Page } from "playwright";
+import type { Page, Frame, Locator } from "playwright";
 import { getPortalContext } from "./browser";
 import { detectWall, wallMessage } from "./detect";
 import { logger } from "@/lib/logger";
@@ -18,6 +18,12 @@ export interface ApplyResult {
   filled: string[];
   message: string;
 }
+
+type Target = Page | Frame;
+
+// A form is "present" once we can see a file input or an email field.
+const FIELD_PROBE =
+  'input[type="file"], input[type="email"], input[name*="email" i], input[id*="email" i]';
 
 export async function openAndFill(
   applyUrl: string,
@@ -39,17 +45,34 @@ export async function openAndFill(
     };
   }
 
-  // Pause at any wall before touching the page.
   let wall = await detectWall(page);
   if (wall) return { status: "needs_you", wall, filled: [], message: wallMessage(wall) };
 
-  const filled = await autofill(page, profile);
-  if (pdfPath) {
-    const ok = await uploadResume(page, pdfPath);
-    if (ok) filled.push("résumé");
+  await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => {});
+
+  // Find the form; if none, the form may be behind an "Apply" button.
+  let target = await findFormTarget(page);
+  if (!target) {
+    await tryClickApply(page);
+    await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => {});
+    target = await findFormTarget(page);
   }
 
-  // A wall may appear only after interaction.
+  wall = await detectWall(page);
+  if (wall) return { status: "needs_you", wall, filled: [], message: wallMessage(wall) };
+
+  if (!target) {
+    return {
+      status: "filled",
+      filled: [],
+      message:
+        "Opened the page, but I couldn't find an application form to fill automatically. Complete and submit it in the browser window.",
+    };
+  }
+
+  const filled = await autofill(target, profile);
+  if (pdfPath && (await uploadResume(target, pdfPath))) filled.push("résumé");
+
   wall = await detectWall(page);
   if (wall) return { status: "needs_you", wall, filled, message: wallMessage(wall) };
 
@@ -59,18 +82,49 @@ export async function openAndFill(
     filled,
     message: filled.length
       ? `Filled ${filled.join(", ")}. Review the open browser window, complete anything left, and click Submit yourself.`
-      : "Opened the page — I couldn't map its fields automatically. Fill and submit it in the browser window.",
+      : "Opened the form but couldn't map its fields. Fill and submit it in the browser window.",
   };
 }
 
-async function autofill(page: Page, profile: ApplyProfile): Promise<string[]> {
+// Search the main frame and any iframes (Greenhouse embeds a form in an iframe).
+async function findFormTarget(page: Page): Promise<Target | null> {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    for (const f of page.frames()) {
+      const n = await f.locator(FIELD_PROBE).count().catch(() => 0);
+      if (n > 0) return f;
+    }
+    await page.waitForTimeout(1500);
+  }
+  return null;
+}
+
+async function tryClickApply(page: Page): Promise<void> {
+  const candidates: Locator[] = [
+    page.getByRole("link", { name: /apply/i }).first(),
+    page.getByRole("button", { name: /apply/i }).first(),
+    page.locator('a:has-text("Apply"), button:has-text("Apply")').first(),
+  ];
+  for (const c of candidates) {
+    try {
+      if ((await c.count()) && (await c.isVisible({ timeout: 500 }).catch(() => false))) {
+        await c.click({ timeout: 3000 }).catch(() => {});
+        await page.waitForTimeout(1500);
+        return;
+      }
+    } catch {
+      /* try next */
+    }
+  }
+}
+
+async function autofill(target: Target, profile: ApplyProfile): Promise<string[]> {
   const filled: string[] = [];
   const parts = profile.fullName.trim().split(/\s+/);
   const first = parts[0] ?? "";
   const last = parts.slice(1).join(" ");
   const d = profile.details;
 
-  const targets: Array<{ label: string; phrases: string[]; attrs: string[]; value: string }> = [
+  const fields: Array<{ label: string; phrases: string[]; attrs: string[]; value: string }> = [
     { label: "first name", phrases: ["first name", "given name"], attrs: ["first"], value: first },
     { label: "last name", phrases: ["last name", "family name", "surname"], attrs: ["last", "surname"], value: last },
     { label: "full name", phrases: ["full name", "your name", "name"], attrs: ["fullname", "full_name"], value: profile.fullName },
@@ -82,41 +136,41 @@ async function autofill(page: Page, profile: ApplyProfile): Promise<string[]> {
     { label: "location", phrases: ["location", "city"], attrs: ["location", "city"], value: d.location ?? "" },
   ];
 
-  const done = new Set<string>(); // avoid filling two labels into the same field
-  for (const t of targets) {
-    if (!t.value.trim()) continue;
-    const ok = await fillOne(page, t.phrases, t.attrs, t.value, done);
-    if (ok) filled.push(t.label);
+  const used = new Set<string>();
+  for (const f of fields) {
+    if (!f.value.trim()) continue;
+    if (await fillOne(target, f.phrases, f.attrs, f.value, used)) filled.push(f.label);
   }
   return filled;
 }
 
 async function fillOne(
-  page: Page,
+  target: Target,
   phrases: string[],
   attrs: string[],
   value: string,
-  done: Set<string>,
+  used: Set<string>,
 ): Promise<boolean> {
-  // 1) by accessible label text
-  for (const phrase of phrases) {
+  const tryFill = async (loc: Locator): Promise<boolean> => {
     try {
-      const el = page
-        .getByLabel(new RegExp(phrase.replace(/\s+/g, "\\s*"), "i"))
-        .first();
-      if ((await el.count()) && (await el.isEditable({ timeout: 400 }).catch(() => false))) {
-        const key = await fieldKey(el);
-        if (!done.has(key)) {
-          await el.fill(value, { timeout: 2000 });
-          done.add(key);
-          return true;
-        }
-      }
+      if (!(await loc.count())) return false;
+      if (!(await loc.isEditable({ timeout: 500 }).catch(() => false))) return false;
+      const key = await fieldKey(loc);
+      if (used.has(key)) return false;
+      await loc.fill(value, { timeout: 2000 });
+      used.add(key);
+      return true;
     } catch {
-      /* try next */
+      return false;
     }
+  };
+
+  for (const phrase of phrases) {
+    const byLabel = target
+      .getByLabel(new RegExp(phrase.replace(/\s+/g, "\\s*"), "i"))
+      .first();
+    if (await tryFill(byLabel)) return true;
   }
-  // 2) by name / id / placeholder / aria-label substring
   for (const attr of attrs) {
     const sel = [
       `input[name*="${attr}" i]`,
@@ -124,38 +178,26 @@ async function fillOne(
       `input[placeholder*="${attr}" i]`,
       `input[aria-label*="${attr}" i]`,
     ].join(",");
-    try {
-      const el = page.locator(sel).first();
-      if ((await el.count()) && (await el.isEditable({ timeout: 400 }).catch(() => false))) {
-        const key = await fieldKey(el);
-        if (!done.has(key)) {
-          await el.fill(value, { timeout: 2000 });
-          done.add(key);
-          return true;
-        }
-      }
-    } catch {
-      /* try next */
-    }
+    if (await tryFill(target.locator(sel).first())) return true;
   }
   return false;
 }
 
-async function fieldKey(el: import("playwright").Locator): Promise<string> {
-  const name = await el.getAttribute("name").catch(() => null);
-  const id = await el.getAttribute("id").catch(() => null);
+async function fieldKey(loc: Locator): Promise<string> {
+  const name = await loc.getAttribute("name").catch(() => null);
+  const id = await loc.getAttribute("id").catch(() => null);
   return name || id || Math.random().toString(36).slice(2);
 }
 
-async function uploadResume(page: Page, pdfPath: string): Promise<boolean> {
+async function uploadResume(target: Target, pdfPath: string): Promise<boolean> {
   try {
-    const fileInput = page.locator('input[type="file"]').first();
+    const fileInput = target.locator('input[type="file"]').first();
     if (await fileInput.count()) {
       await fileInput.setInputFiles(pdfPath, { timeout: 5000 });
       return true;
     }
   } catch {
-    /* no file input found */
+    /* no file input */
   }
   return false;
 }
