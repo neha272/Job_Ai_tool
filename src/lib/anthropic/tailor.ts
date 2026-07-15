@@ -1,85 +1,109 @@
 import "server-only";
-import { z } from "zod";
-import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
-import { getAnthropic, TAILOR_MODEL } from "./client";
-import { TAILOR_SYSTEM, buildTailorUserPrompt, FIX_LATEX_SYSTEM } from "./prompts";
+import { generateText } from "@/lib/llm";
+import {
+  TAILOR_SYSTEM,
+  FIX_LATEX_SYSTEM,
+  buildTailorUserPrompt,
+  buildFixPrompt,
+  TEX_BEGIN,
+  TEX_END,
+  CHANGES_BEGIN,
+  CHANGES_END,
+} from "./prompts";
 import { logger } from "@/lib/logger";
 
-const ChangeSchema = z.object({
-  section: z.string(),
-  what: z.string(),
-  why: z.string(),
-});
+export interface ResumeChange {
+  section: string;
+  what: string;
+  why: string;
+}
+export interface TailorResult {
+  revisedTex: string;
+  changes: ResumeChange[];
+}
 
-const TailorSchema = z.object({
-  revisedTex: z.string(),
-  changes: z.array(ChangeSchema),
-});
+function between(s: string, a: string, b: string): string {
+  const i = s.indexOf(a);
+  if (i < 0) return "";
+  const start = i + a.length;
+  const j = s.indexOf(b, start);
+  return (j < 0 ? s.slice(start) : s.slice(start, j)).trim();
+}
 
-export type ResumeChange = z.infer<typeof ChangeSchema>;
-export type TailorResult = z.infer<typeof TailorSchema>;
+function extractTex(raw: string): string {
+  let tex = between(raw, TEX_BEGIN, TEX_END);
+  if (!tex) {
+    // Fallback if the model skipped the markers but returned a document.
+    const m = raw.match(/\\documentclass[\s\S]*\\end\{document\}/);
+    if (m) tex = m[0].trim();
+  }
+  // Strip accidental code fences.
+  return tex
+    .replace(/^```(?:latex|tex)?\s*/i, "")
+    .replace(/```\s*$/, "")
+    .trim();
+}
 
-const FixSchema = z.object({
-  revisedTex: z.string(),
-  fixSummary: z.string(),
-});
+function parseChanges(raw: string): ResumeChange[] {
+  if (!raw) return [];
+  const cleaned = raw
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/```\s*$/, "")
+    .trim();
+  try {
+    const parsed = JSON.parse(cleaned);
+    if (Array.isArray(parsed)) {
+      return parsed
+        .filter((c) => c && typeof c === "object")
+        .map((c) => ({
+          section: String(c.section ?? ""),
+          what: String(c.what ?? ""),
+          why: String(c.why ?? ""),
+        }))
+        .filter((c) => c.what);
+    }
+  } catch {
+    // changes are informational — a parse failure is non-fatal
+  }
+  return [];
+}
 
 export async function tailorResume(
   baseTex: string,
   jobText: string,
 ): Promise<TailorResult> {
-  const client = getAnthropic();
   logger.info("tailor", "tailoring resume", { jobChars: jobText.length });
-  const res = await client.messages.parse({
-    model: TAILOR_MODEL,
-    max_tokens: 32000,
-    thinking: { type: "adaptive" },
-    output_config: { effort: "high", format: zodOutputFormat(TailorSchema) },
+  const raw = await generateText({
     system: TAILOR_SYSTEM,
-    messages: [{ role: "user", content: buildTailorUserPrompt(baseTex, jobText) }],
+    prompt: buildTailorUserPrompt(baseTex, jobText),
+    maxTokens: 32000,
+    tier: "quality",
   });
-  if (!res.parsed_output) {
+  const revisedTex = extractTex(raw);
+  if (revisedTex.length < 20) {
     throw new Error(
-      res.stop_reason === "refusal"
-        ? "The model declined to tailor this résumé."
-        : "Tailoring returned no structured output.",
+      "The model didn't return usable LaTeX. On the local model, try a longer-context model (e.g. `qwen2.5:7b`) or set ANTHROPIC_API_KEY.",
     );
   }
-  logger.info("tailor", "tailored", { changes: res.parsed_output.changes.length });
-  return res.parsed_output;
+  const changes = parseChanges(between(raw, CHANGES_BEGIN, CHANGES_END));
+  logger.info("tailor", "tailored", { changes: changes.length });
+  return { revisedTex, changes };
 }
 
 export async function fixLatexError(
   tex: string,
   errorLog: string,
 ): Promise<{ revisedTex: string; fixSummary: string }> {
-  const client = getAnthropic();
   logger.info("tailor", "fixing latex error");
-  const res = await client.messages.parse({
-    model: TAILOR_MODEL,
-    max_tokens: 32000,
-    thinking: { type: "adaptive" },
-    output_config: { effort: "high", format: zodOutputFormat(FixSchema) },
+  const raw = await generateText({
     system: FIX_LATEX_SYSTEM,
-    messages: [
-      {
-        role: "user",
-        content: [
-          "This LaTeX failed to compile with Tectonic.",
-          "",
-          "<error>",
-          errorLog.slice(0, 6000),
-          "</error>",
-          "",
-          "<latex>",
-          tex,
-          "</latex>",
-          "",
-          'Return the corrected complete LaTeX in "revisedTex" and a one-line "fixSummary". Do not change any résumé facts.',
-        ].join("\n"),
-      },
-    ],
+    prompt: buildFixPrompt(tex, errorLog),
+    maxTokens: 32000,
+    tier: "quality",
   });
-  if (!res.parsed_output) throw new Error("LaTeX fix returned no output.");
-  return res.parsed_output;
+  const revisedTex = extractTex(raw);
+  if (revisedTex.length < 20) {
+    throw new Error("The model didn't return a usable LaTeX fix.");
+  }
+  return { revisedTex, fixSummary: "Auto-corrected a LaTeX compile error." };
 }

@@ -1,3 +1,10 @@
+// Sentinels so the (backslash-heavy) LaTeX never has to survive JSON escaping —
+// works reliably on both Claude and local models.
+export const TEX_BEGIN = "===BEGIN RESUME TEX===";
+export const TEX_END = "===END RESUME TEX===";
+export const CHANGES_BEGIN = "===BEGIN CHANGES JSON===";
+export const CHANGES_END = "===END CHANGES JSON===";
+
 export const TAILOR_SYSTEM = `You are an expert résumé editor. You tailor a candidate's existing LaTeX résumé to a specific job description.
 
 ABSOLUTE RULES — never violate these:
@@ -23,8 +30,35 @@ export function buildTailorUserPrompt(baseTex: string, jobText: string): string 
     jobText,
     "</job_description>",
     "",
-    'Tailor my résumé to this job following every rule above. Put the complete revised LaTeX in "revisedTex", and a concise list of the specific edits you made (with a short reason each) in "changes".',
+    "Tailor my résumé to this job following every rule above.",
+    "",
+    "OUTPUT FORMAT — follow it exactly, output nothing else:",
+    `${TEX_BEGIN}`,
+    "<the COMPLETE revised LaTeX document here, raw — not inside JSON, not fenced>",
+    `${TEX_END}`,
+    `${CHANGES_BEGIN}`,
+    '<a JSON array of the edits you made: [{"section":"...","what":"...","why":"..."}]>',
+    `${CHANGES_END}`,
   ].join("\n");
 }
 
 export const FIX_LATEX_SYSTEM = `You fix LaTeX compilation errors. Change ONLY syntax and structure so the document compiles with Tectonic. Do NOT add, remove, or alter any résumé facts (employers, titles, dates, skills, numbers). Return the complete corrected LaTeX document.`;
+
+export function buildFixPrompt(tex: string, errorLog: string): string {
+  return [
+    "This LaTeX failed to compile with Tectonic. Fix only the syntax/structure so it compiles — do not change any résumé facts.",
+    "",
+    "<error>",
+    errorLog.slice(0, 6000),
+    "</error>",
+    "",
+    "<latex>",
+    tex,
+    "</latex>",
+    "",
+    "OUTPUT FORMAT — follow it exactly, output nothing else:",
+    `${TEX_BEGIN}`,
+    "<the COMPLETE corrected LaTeX document here, raw>",
+    `${TEX_END}`,
+  ].join("\n");
+}

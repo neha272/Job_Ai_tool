@@ -22,12 +22,6 @@ export async function createAndTailor(input: {
   if (!company || !title) {
     return { ok: false, message: "Company and title are required." };
   }
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return {
-      ok: false,
-      message: "ANTHROPIC_API_KEY is not set. Add it to .env and restart the dev server.",
-    };
-  }
   const base = await prisma.resume.findFirst({ where: { isBase: true } });
   if (!base) {
     return { ok: false, message: "Add your base résumé in Settings first." };
@@ -81,12 +75,6 @@ export async function createAndTailor(input: {
 }
 
 export async function tailorExistingJob(jobId: string): Promise<ActionResult> {
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return {
-      ok: false,
-      message: "ANTHROPIC_API_KEY is not set. Add it to .env and restart the dev server.",
-    };
-  }
   const base = await prisma.resume.findFirst({ where: { isBase: true } });
   if (!base) {
     return { ok: false, message: "Add your base résumé in Settings first." };

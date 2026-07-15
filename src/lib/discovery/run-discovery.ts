@@ -3,11 +3,8 @@ import { prisma } from "@/lib/prisma";
 import { fetchPostings } from "@/lib/sources/normalize";
 import type { BoardType } from "@/lib/sources/types";
 import { scoreFit } from "@/lib/anthropic/score";
+import { hasAnthropic } from "@/lib/llm";
 import { logger } from "@/lib/logger";
-
-// Cap Claude scoring calls per run so a large board doesn't fan out into
-// hundreds of API calls; anything beyond the cap is stored unscored.
-const SCORE_CAP = 25;
 
 export interface DiscoveryResult {
   fetched: number;
@@ -36,7 +33,10 @@ export async function runDiscovery(): Promise<DiscoveryResult> {
     return result;
   }
 
-  const canScore = !!base && !!process.env.ANTHROPIC_API_KEY;
+  // Cap scoring per run so a large board doesn't fan out into hundreds of model
+  // calls; the local model is slower, so use a smaller cap without a key.
+  const scoreCap = hasAnthropic() ? 25 : 8;
+  const canScore = !!base;
 
   for (const s of sources) {
     let postings;
@@ -60,7 +60,7 @@ export async function runDiscovery(): Promise<DiscoveryResult> {
 
       let fitScore: number | null = null;
       if (canScore && base) {
-        if (result.scored < SCORE_CAP) {
+        if (result.scored < scoreCap) {
           try {
             const sc = await scoreFit(
               base.texSource,

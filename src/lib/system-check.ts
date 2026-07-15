@@ -5,6 +5,7 @@ import { readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { prisma } from "@/lib/prisma";
+import { hasAnthropic, OLLAMA_URL, OLLAMA_MODEL } from "@/lib/llm/config";
 
 const execFileAsync = promisify(execFile);
 
@@ -49,8 +50,6 @@ async function checkTectonic(): Promise<CheckItem> {
 }
 
 function checkPlaywrightBrowsers(): CheckItem {
-  // Playwright caches browsers here on macOS. The npm package + browsers are
-  // installed in Phase 3, so absence is a warning, not an error.
   const cacheDir = join(homedir(), "Library", "Caches", "ms-playwright");
   try {
     const entries = readdirSync(cacheDir);
@@ -103,46 +102,82 @@ async function checkDatabase(): Promise<CheckItem> {
   }
 }
 
-/** Reports only whether a var is set — never its value. */
-function checkEnv(): CheckItem[] {
+// The AI model can come from Anthropic (if a key is set) or a local Ollama model.
+async function checkLlm(): Promise<CheckItem> {
+  if (hasAnthropic()) {
+    return {
+      key: "llm",
+      label: "AI model (tailoring + scoring)",
+      status: "ok",
+      detail: "Anthropic (Claude) — API key set.",
+    };
+  }
+  try {
+    const res = await fetch(`${OLLAMA_URL}/api/tags`, {
+      signal: AbortSignal.timeout(3000),
+    });
+    if (res.ok) {
+      const data = (await res.json()) as { models?: Array<{ name?: string }> };
+      const names = (data.models ?? []).map((m) => m.name ?? "");
+      const present = names.some((n) => n === OLLAMA_MODEL || n.startsWith(OLLAMA_MODEL));
+      if (present) {
+        return {
+          key: "llm",
+          label: "AI model (tailoring + scoring)",
+          status: "ok",
+          detail: `Local model — Ollama "${OLLAMA_MODEL}" (no API key needed).`,
+        };
+      }
+      return {
+        key: "llm",
+        label: "AI model (tailoring + scoring)",
+        status: "warn",
+        detail: `Ollama is running but "${OLLAMA_MODEL}" isn't pulled.`,
+        hint: `ollama pull ${OLLAMA_MODEL}`,
+      };
+    }
+  } catch {
+    // fall through to the warning below
+  }
+  return {
+    key: "llm",
+    label: "AI model (tailoring + scoring)",
+    status: "warn",
+    detail: "No AI model available.",
+    hint: "Start Ollama (ollama serve) or set ANTHROPIC_API_KEY in .env.",
+  };
+}
+
+/** Reports only whether SMTP is set — never the values. */
+function checkSmtp(): CheckItem {
   const present = (v?: string) => typeof v === "string" && v.trim().length > 0;
-  const anthropic = present(process.env.ANTHROPIC_API_KEY);
   const smtp =
     present(process.env.SMTP_USER) &&
     present(process.env.SMTP_PASS) &&
     present(process.env.MAIL_FROM);
-  return [
-    {
-      key: "anthropic",
-      label: "Anthropic API key",
-      status: anthropic ? "ok" : "warn",
-      detail: anthropic ? "Set." : "Not set.",
-      hint: anthropic
-        ? undefined
-        : "Required from Phase 1 (tailoring + scoring). Add ANTHROPIC_API_KEY to .env",
-    },
-    {
-      key: "smtp",
-      label: "SMTP (email sending)",
-      status: smtp ? "ok" : "warn",
-      detail: smtp ? "Configured." : "Not fully configured.",
-      hint: smtp
-        ? undefined
-        : "Required from Phase 1 (email method). Set SMTP_USER, SMTP_PASS, MAIL_FROM in .env",
-    },
-  ];
+  return {
+    key: "smtp",
+    label: "SMTP (email sending)",
+    status: smtp ? "ok" : "warn",
+    detail: smtp ? "Configured." : "Not fully configured.",
+    hint: smtp
+      ? undefined
+      : "Required only to auto-send email. Set SMTP_USER, SMTP_PASS, MAIL_FROM in .env",
+  };
 }
 
 export async function getSystemCheck(): Promise<SystemCheckResult> {
-  const [tectonic, database] = await Promise.all([
+  const [tectonic, database, llm] = await Promise.all([
     checkTectonic(),
     checkDatabase(),
+    checkLlm(),
   ]);
   const items: CheckItem[] = [
     tectonic,
     database,
+    llm,
     checkPlaywrightBrowsers(),
-    ...checkEnv(),
+    checkSmtp(),
   ];
   return { checkedAt: new Date().toISOString(), items };
 }
